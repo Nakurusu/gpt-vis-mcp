@@ -41,6 +41,9 @@ RUN echo "en_US.UTF-8 UTF-8" >> /etc/locale.gen && \
 RUN curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
     && apt-get install -y nodejs
 
+# Preinstall upstream MCP chart server so composeMcpDepTools can start it without network
+RUN npm i -g @antv/mcp-server-chart@0.7.1 && npm cache clean --force
+
 # Install uv and mcp-proxy (needed for SSE mode)
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \
     /root/.local/bin/uv tool install mcp-proxy 

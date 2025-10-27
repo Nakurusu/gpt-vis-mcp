@@ -7,22 +7,19 @@
 
 import { render } from "@yaonyan/gpt-vis-ssr-napi-rs";
 import { ComposableMCPServer, composeMcpDepTools } from "@mcpc/core";
-import { generateId, jsonSchema } from "ai";
-import { access, constants, mkdir } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import process from "node:process";
+import { jsonSchema } from "ai";
 import { CHART_TYPE_MAP, CHART_TYPE_UNSUPPORTED } from "./constant.ts";
 
-/**
- * Configuration for the chart rendering service
- */
-export interface ServerConfig {
-  /** Directory path where generated images will be saved */
-  renderedImagePath: string;
-  /** Base URL for accessing images via web server (optional) */
-  renderedImageHostPath?: string;
-}
+import sharp from "npm:sharp";
+// ---- JPEG default settings (edit here if you want different hard-coded defaults) ----
+const JPEG_DEFAULTS = {
+  initialQuality: 90,         // starting quality
+  minQuality: 70,             // <-- floor quality (set to 50 if you want lower minimum)
+  step: 10,                   // quality decrement per iteration
+  maxBytes: 1_048_576,        // 1MB limit
+  mozjpeg: true,              // use mozjpeg encoder
+} as const;
+// ----------------------------------------------------------------------------
 
 /**
  * Chart generation options
@@ -45,13 +42,61 @@ export interface ChartResult {
 }
 
 /**
- * HTTP API Response
+ * HTTP API Response (base64 mode)
  */
 export interface ChartResponse {
   success: boolean;
-  resultObj?: string;
+  base64?: string;
+  mimeType?: string;
   errorMessage?: string;
 }
+
+// ---- JPEG conversion & compression helpers ----
+type JpegOptions = {
+  initialQuality?: number; // starting quality, 1-100
+  minQuality?: number;     // floor quality, 1-100
+  step?: number;           // decrement step
+  maxBytes?: number;       // size limit in bytes
+  mozjpeg?: boolean;       // use mozjpeg encoder
+};
+
+function normalizeJpegOptions(input: unknown): Required<JpegOptions> {
+  const src = (input ?? {}) as Record<string, unknown>;
+  const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+  const toNum = (v: unknown, d: number) => (typeof v === "number" && Number.isFinite(v)) ? v : d;
+  const toBool = (v: unknown, d: boolean) => (typeof v === "boolean") ? v : d;
+
+  const initialQuality = clamp(Math.round(toNum(src.initialQuality, JPEG_DEFAULTS.initialQuality)), 1, 100);
+  const minQuality = clamp(Math.round(toNum(src.minQuality, JPEG_DEFAULTS.minQuality)), 1, initialQuality);
+  const step = clamp(Math.round(toNum(src.step, JPEG_DEFAULTS.step)), 1, 50);
+  const maxBytes = Math.max(1, Math.round(toNum(src.maxBytes, JPEG_DEFAULTS.maxBytes)));
+  const mozjpeg = toBool(src.mozjpeg, JPEG_DEFAULTS.mozjpeg);
+
+  return { initialQuality, minQuality, step, maxBytes, mozjpeg };
+}
+
+async function encodeJpeg(buf: Uint8Array, quality: number, mozjpeg: boolean): Promise<Uint8Array> {
+  return await sharp(buf).jpeg({ quality, mozjpeg }).toBuffer();
+}
+
+async function autoCompressToJpeg(
+  buf: Uint8Array,
+  opts: Required<JpegOptions>,
+): Promise<{ output: Uint8Array; quality: number; size: number }> {
+  let q = opts.initialQuality;
+  let out = await encodeJpeg(buf, q, opts.mozjpeg);
+  let size = out.byteLength;
+
+  while (size > opts.maxBytes && q > opts.minQuality) {
+    const nextQ = Math.max(opts.minQuality, q - opts.step);
+    if (nextQ === q) break;
+    q = nextQ;
+    out = await encodeJpeg(buf, q, opts.mozjpeg);
+    size = out.byteLength;
+  }
+  return { output: out, quality: q, size };
+}
+// ---- end helpers ----
 
 /**
  * MCP Tool definition
@@ -62,73 +107,7 @@ interface MCPTool {
   inputSchema: Record<string, unknown>;
 }
 
-// Server configuration with environment variable support
-export const config: ServerConfig = {
-  renderedImagePath: process.env.RENDERED_IMAGE_PATH ??
-    join(tmpdir(), "gpt-vis-charts"),
-  renderedImageHostPath: process.env.RENDERED_IMAGE_HOST_PATH,
-};
-
-/**
- * Initialize the chart generation directory
- */
-export async function initializeImageDirectory(): Promise<void> {
-  console.log(`🔍 Checking image directory: ${config.renderedImagePath}`);
-
-  try {
-    // Check if directory exists
-    await access(config.renderedImagePath, constants.F_OK);
-    console.log("✅ Image directory already exists");
-  } catch {
-    // Directory doesn't exist, create it
-    console.log("📁 Image directory does not exist, creating...");
-    try {
-      await mkdir(config.renderedImagePath, { recursive: true });
-      console.log("✅ Image directory created successfully");
-    } catch (error) {
-      console.error(
-        `❌ Failed to create directory ${config.renderedImagePath}:`,
-        error,
-      );
-      throw new Error(
-        `Failed to initialize image directory: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-    }
-  }
-}
-
-/**
- * Generate a unique filename for the chart image
- */
-export function generateImageFilename(): string {
-  const id = generateId(8);
-  const timestamp = Date.now();
-  return `chart_${timestamp}_${id}.png`;
-}
-
-/**
- * Generate the appropriate response URL/path for the generated image
- * @param filename - The generated filename
- * @param forHttp - Whether this is for HTTP response (returns relative URL) or MCP (returns full path)
- */
-export function generateImageResponse(
-  filename: string,
-  forHttp = false,
-): string {
-  if (config.renderedImageHostPath) {
-    return `${config.renderedImageHostPath}/${filename}`;
-  }
-
-  if (forHttp) {
-    // For HTTP server mode, return relative URL
-    return `/charts/${filename}`;
-  }
-
-  // For MCP mode, return full path
-  return join(config.renderedImagePath, filename);
-}
+console.log("🚀 Initializing GPT-Vis MCP Server (base64 mode, no file writes)...");
 
 /**
  * Generate a chart with the given options (MCP format result)
@@ -137,46 +116,38 @@ export async function generateChart(
   options: ChartOptions,
 ): Promise<ChartResult> {
   const startTime = Date.now();
-  console.log(`🎨 Starting chart generation: type=${options.type}`);
+  console.log(`🎨 Starting chart generation (base64 mode): type=${options.type}`);
 
   try {
     // Render the chart using GPT-Vis SSR
     console.log("🔄 Rendering chart with GPT-Vis SSR...");
     const vis = await render(options);
-
-    // Generate filename and full path
-    const filename = generateImageFilename();
-    const fullPath = join(config.renderedImagePath, filename);
-    console.log(`💾 Saving chart to: ${filename}`);
-
-    // Export chart to file
-    vis.exportToFile(fullPath, {});
-
-    const imageUrl = generateImageResponse(filename);
+    // Render to buffer (likely PNG), then convert to JPEG and auto-compress to <= maxBytes
+    const raw = await vis.toBuffer();
+    const jpegUserOpts = (options as unknown as { jpeg?: JpegOptions; jpg?: JpegOptions }).jpeg
+      ?? (options as unknown as { jpg?: JpegOptions }).jpg
+      ?? {};
+    const jpegOpts = normalizeJpegOptions(jpegUserOpts);
+    console.log(`🔧 JPEG defaults in use -> initial=${JPEG_DEFAULTS.initialQuality}, min=${JPEG_DEFAULTS.minQuality}, step=${JPEG_DEFAULTS.step}, maxBytes=${JPEG_DEFAULTS.maxBytes}`);
+    const { output, quality, size } = await autoCompressToJpeg(raw, jpegOpts);
+    const base64 = output.toString("base64");
     const duration = Date.now() - startTime;
-
-    console.log(
-      `✅ Chart generated successfully in ${duration}ms: ${imageUrl}`,
-    );
+    console.log(`✅ Chart generated (JPEG) in ${duration}ms: quality=${quality}, size=${size} bytes`);
 
     return {
       isError: false,
       content: [
         {
           type: "text",
-          text: config.renderedImageHostPath
-            ? `Chart generated successfully! Access it at: ${imageUrl}`
-            : `Chart generated and saved to: ${imageUrl}`,
+          // Return the raw JPEG base64 string as MCP text content
+          text: base64,
         },
       ],
     };
   } catch (error) {
     const duration = Date.now() - startTime;
     const errorMessage = error instanceof Error ? error.message : String(error);
-    console.error(
-      `❌ Chart generation failed after ${duration}ms:`,
-      errorMessage,
-    );
+    console.error(`❌ Chart generation failed after ${duration}ms:`, errorMessage);
 
     return {
       isError: true,
@@ -211,23 +182,25 @@ export async function generateChartForHttp(
       ...restOptions,
     };
 
-    console.log(`🎨 Starting chart generation: type=${type}`);
+    console.log(`🎨 Starting chart generation (base64 mode): type=${type}`);
     // Render the chart using GPT-Vis SSR
     const vis = await render(renderOptions);
     console.log("✅ Successfully rendered chart with GPT-Vis SSR");
-
-    // Generate filename and full path
-    const filename = generateImageFilename();
-    const fullPath = join(config.renderedImagePath, filename);
-
-    // Export chart to file
-    vis.exportToFile(fullPath, {});
-
-    const resultObj = generateImageResponse(filename, true);
+    // Render to buffer (likely PNG), then convert to JPEG and auto-compress to <= maxBytes
+    const raw = await vis.toBuffer();
+    const jpegUserOpts = (options as unknown as { jpeg?: JpegOptions; jpg?: JpegOptions }).jpeg
+      ?? (options as unknown as { jpg?: JpegOptions }).jpg
+      ?? {};
+    const jpegOpts = normalizeJpegOptions(jpegUserOpts);
+    console.log(`🔧 JPEG defaults in use -> initial=${JPEG_DEFAULTS.initialQuality}, min=${JPEG_DEFAULTS.minQuality}, step=${JPEG_DEFAULTS.step}, maxBytes=${JPEG_DEFAULTS.maxBytes}`);
+    const { output, quality, size } = await autoCompressToJpeg(raw, jpegOpts);
+    console.log(`🗜️ JPEG compression result: quality=${quality}, size=${size} bytes (limit=${jpegOpts.maxBytes})`);
+    const base64 = output.toString("base64");
 
     return {
       success: true,
-      resultObj,
+      base64,
+      mimeType: "image/jpeg",
     };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
@@ -238,22 +211,7 @@ export async function generateChartForHttp(
       errorMessage,
     };
   }
-}
-
-// Initialize directory at startup
-console.log("🚀 Initializing GPT-Vis MCP Server...");
-console.log(`📁 Image directory: ${config.renderedImagePath}`);
-if (config.renderedImageHostPath) {
-  console.log(`🌐 Host path: ${config.renderedImageHostPath}`);
-}
-
-try {
-  await initializeImageDirectory();
-  console.log("✅ Image directory initialized successfully");
-} catch (error) {
-  console.error("❌ Startup failed:", error);
-  process.exit(1);
-}
+};
 
 /**
  * Compose MCP tools from the upstream chart server
@@ -262,8 +220,8 @@ console.log("🔧 Composing MCP tools from upstream chart server...");
 const { tools, cleanupClients } = await composeMcpDepTools({
   mcpServers: {
     "mcp-server-chart": {
-      command: "npx",
-      args: ["-y", "@antv/mcp-server-chart@0.7.1"],
+      command: "mcp-server-chart",
+      args: [],
     },
   },
 });

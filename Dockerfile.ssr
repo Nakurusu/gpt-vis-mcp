@@ -42,6 +42,9 @@ RUN curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
     && apt-get install -y nodejs \
     && npm install -g node-gyp
 
+# Preinstall upstream MCP chart server so composeMcpDepTools can start it without network
+RUN npm i -g @antv/mcp-server-chart@0.7.1 && npm cache clean --force
+
 # Set working directory
 WORKDIR /app
 

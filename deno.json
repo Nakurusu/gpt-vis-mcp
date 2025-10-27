@@ -9,7 +9,8 @@
     "@modelcontextprotocol/sdk": "npm:@modelcontextprotocol/sdk@^1.8.0",
     "@std/cli": "jsr:@std/cli@^1.0.22",
     "@yaonyan/gpt-vis-ssr-napi-rs": "npm:@yaonyan/gpt-vis-ssr-napi-rs@0.2.4",
-    "ai": "npm:ai@^4.3.4"
+    "ai": "npm:ai@^4.3.4",
+    "sharp": "npm:sharp@^0.33.5"
   },
   "exports": {
     "./bin": "./server.ts"

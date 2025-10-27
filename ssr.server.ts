@@ -5,13 +5,9 @@
  * while maintaining the same local chart generation capabilities.
  */
 
-import { join } from "node:path";
 import {
   type ChartOptions,
-  type ServerConfig,
-  config,
   generateChartForHttp,
-  initializeImageDirectory,
 } from "./app.ts";
 
 /**
@@ -24,13 +20,12 @@ interface ChartRequest extends ChartOptions {
 /**
  * Server configuration for HTTP mode
  */
-interface HttpServerConfig extends ServerConfig {
+interface HttpServerConfig {
   port: number;
 }
 
 // HTTP server specific configuration
 const httpConfig: HttpServerConfig = {
-  ...config,
   port: parseInt(Deno.env.get("PORT") ?? "3000", 10),
 };
 
@@ -38,9 +33,6 @@ const httpConfig: HttpServerConfig = {
  * Start the HTTP server
  */
 export async function startHttpServer(): Promise<void> {
-  // Initialize directory
-  await initializeImageDirectory();
-
   const server = Deno.serve({ port: httpConfig.port }, async (request: Request) => {
     const url = new URL(request.url);
 
@@ -72,18 +64,26 @@ export async function startHttpServer(): Promise<void> {
       );
     }
 
-    // Chart generation endpoint
+    // Chart generation endpoint (returns base64, no file writes)
     if (url.pathname === "/generate" && request.method === "POST") {
       try {
         const requestBody = (await request.json()) as ChartRequest;
-        const result = await generateChartForHttp(requestBody);
+        const { success, base64, mimeType, errorMessage } = await generateChartForHttp(requestBody);
 
-        return new Response(JSON.stringify(result), {
-          headers: {
-            "Content-Type": "application/json",
-            ...corsHeaders,
-          },
-        });
+        if (!success || !base64) {
+          throw new Error(errorMessage ?? "Chart generation did not return base64 content");
+        }
+
+        const dataUrl = `data:${mimeType ?? "image/png"};base64,${base64}`;
+        return new Response(
+          JSON.stringify({ success: true, base64, dataUrl }),
+          {
+            headers: {
+              "Content-Type": "application/json",
+              ...corsHeaders,
+            },
+          }
+        );
       } catch (error) {
         const errorMessage =
           error instanceof Error ? error.message : String(error);
@@ -104,31 +104,6 @@ export async function startHttpServer(): Promise<void> {
       }
     }
 
-    // Serve generated chart images
-    if (url.pathname.startsWith("/charts/") && request.method === "GET") {
-      const filename = url.pathname.replace("/charts/", "");
-      const filePath = join(httpConfig.renderedImagePath, filename);
-
-      try {
-        const file = await Deno.open(filePath, { read: true });
-        const fileInfo = await file.stat();
-
-        return new Response(file.readable, {
-          headers: {
-            "Content-Type": "image/png",
-            "Content-Length": fileInfo.size.toString(),
-            "Cache-Control": "public, max-age=3600",
-            ...corsHeaders,
-          },
-        });
-      } catch {
-        return new Response("Image not found", {
-          status: 404,
-          headers: corsHeaders,
-        });
-      }
-    }
-
     // API documentation endpoint
     if (url.pathname === "/" && request.method === "GET") {
       const docs = `
@@ -141,15 +116,17 @@ export async function startHttpServer(): Promise<void> {
         .endpoint { background: #f5f5f5; padding: 15px; margin: 10px 0; border-radius: 5px; }
         .method { color: #007acc; font-weight: bold; }
         pre { background: #f0f0f0; padding: 10px; border-radius: 3px; overflow-x: auto; }
+        code { white-space: pre-wrap; }
     </style>
 </head>
 <body>
     <h1>GPT-Vis MCP HTTP Server</h1>
-    <p>Local chart generation service compatible with GPT-Vis-SSR API</p>
+    <p>Local chart generation service that returns <strong>base64</strong> (no files written).</p>
     
     <div class="endpoint">
         <h3><span class="method">POST</span> /generate</h3>
-        <p>Generate a chart from the provided data</p>
+        <p>Generate a chart from the provided data and receive a base64-encoded PNG.</p>
+        <p><strong>Request Body (example):</strong></p>
         <pre>{
   "type": "line",
   "data": [
@@ -160,13 +137,9 @@ export async function startHttpServer(): Promise<void> {
         <p><strong>Response:</strong></p>
         <pre>{
   "success": true,
-  "resultObj": "/charts/chart_1640000000000_abc12345.png"
+  "base64": "&lt;very-long-base64&gt;",
+  "dataUrl": "data:image/png;base64,&lt;very-long-base64&gt;"
 }</pre>
-    </div>
-
-    <div class="endpoint">
-        <h3><span class="method">GET</span> /charts/:filename</h3>
-        <p>Serve generated chart images</p>
     </div>
 
     <div class="endpoint">
@@ -177,8 +150,6 @@ export async function startHttpServer(): Promise<void> {
     <h2>Environment Variables</h2>
     <ul>
         <li><code>PORT</code>: Server port (default: 3000)</li>
-        <li><code>RENDERED_IMAGE_PATH</code>: Directory for chart images</li>
-        <li><code>RENDERED_IMAGE_HOST_PATH</code>: Base URL for image access</li>
     </ul>
 </body>
 </html>`;
@@ -200,8 +171,6 @@ export async function startHttpServer(): Promise<void> {
 
   console.log(`🌟 GPT-Vis MCP HTTP Server started!`);
   console.log(`📊 Port: ${httpConfig.port}`);
-  console.log(`📁 Image directory: ${httpConfig.renderedImagePath}`);
-  console.log(`🌐 Image host: ${httpConfig.renderedImageHostPath || "local"}`);
   console.log(`🚀 API docs: http://localhost:${httpConfig.port}/`);
   console.log(`💚 Health check: http://localhost:${httpConfig.port}/health`);
 
