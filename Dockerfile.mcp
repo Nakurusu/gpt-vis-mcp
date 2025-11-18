@@ -41,9 +41,6 @@ RUN echo "en_US.UTF-8 UTF-8" >> /etc/locale.gen && \
 RUN curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
     && apt-get install -y nodejs
 
-# Preinstall upstream MCP chart server so composeMcpDepTools can start it without network
-RUN npm i -g @antv/mcp-server-chart@0.7.1 && npm cache clean --force
-
 # Install uv and mcp-proxy (needed for SSE mode)
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \
     /root/.local/bin/uv tool install mcp-proxy 
@@ -51,27 +48,36 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \
 # Set working directory
 WORKDIR /app
 
-# Copy dependency files first to leverage Docker caching
+# Copy dependency files first
 COPY deno.json deno.lock* ./
 
-# Set environment variables
+# Set environment variables for Deno
+# Key: DENO_DIR must be set to a directory that persists in the image
 ENV RENDERED_IMAGE_PATH=/tmp/gpt-vis-charts \
-    DENO_DIR=/deno-dir \
-    DENO_INSTALL_ROOT=/deno-dir/install-root \
+    DENO_DIR=/root/.cache/deno \
     LANG=zh_CN.UTF-8 \
     LANGUAGE=zh_CN:zh \
     LC_ALL=zh_CN.UTF-8 \
     PATH="/root/.local/bin:$PATH" 
 
-# Create necessary directories
-RUN mkdir -p $DENO_DIR $RENDERED_IMAGE_PATH
-
-# Copy source code
+# Copy all source files
 COPY . .
 
-# Install and cache dependencies
-RUN deno task compile && \
-    deno cache server.ts
+# Create necessary directories
+RUN mkdir -p $RENDERED_IMAGE_PATH
+
+# Pre-install @antv/mcp-server-chart globally to avoid runtime npm downloads in offline mode
+RUN npm install -g @antv/mcp-server-chart@0.7.1 2>&1 | tail -20
+
+# Pre-cache all dependencies during build
+# This is the critical step - we download everything and lock it in the image
+RUN echo "=== Caching Deno dependencies with --reload ===" && \
+    deno cache --allow-scripts=npm:canvas@3.2.0 \
+    --reload \
+    --lock=deno.lock \
+    server.ts stdio.server.ts app.ts ssr.server.ts && \
+    echo "=== Deno dependencies cached successfully ===" && \
+    du -sh /root/.cache/deno 2>/dev/null || echo "Cache info"
 
 # Labels for image identification
 LABEL org.opencontainers.image.source="https://github.com/yaonyan/gpt-vis-mcp"
@@ -83,5 +89,5 @@ LABEL org.opencontainers.image.description="GPT-Vis MCP Server"
 # Usage examples:
 #   stdio mode: docker run image
 #   sse mode:   docker run image --transport sse --port 3000 --host 0.0.0.0
-ENTRYPOINT ["deno", "run", "--cached-only", "--allow-all", "server.ts"]
-CMD ["--transport", "stdio"]
+ENTRYPOINT ["deno", "run", "--allow-all", "server.ts"]
+CMD ["--transport", "sse", "--port", "3000", "--host", "0.0.0.0"]

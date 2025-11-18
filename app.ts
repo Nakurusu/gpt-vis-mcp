@@ -107,7 +107,7 @@ interface MCPTool {
   inputSchema: Record<string, unknown>;
 }
 
-console.log("🚀 Initializing GPT-Vis MCP Server (base64 mode, no file writes)...");
+console.error("🚀 Initializing GPT-Vis MCP Server (base64 mode, no file writes)...");
 
 /**
  * Generate a chart with the given options (MCP format result)
@@ -116,11 +116,11 @@ export async function generateChart(
   options: ChartOptions,
 ): Promise<ChartResult> {
   const startTime = Date.now();
-  console.log(`🎨 Starting chart generation (base64 mode): type=${options.type}`);
+  console.error(`🎨 Starting chart generation (base64 mode): type=${options.type}`);
 
   try {
     // Render the chart using GPT-Vis SSR
-    console.log("🔄 Rendering chart with GPT-Vis SSR...");
+    console.error("🔄 Rendering chart with GPT-Vis SSR...");
     const vis = await render(options);
     // Render to buffer (likely PNG), then convert to JPEG and auto-compress to <= maxBytes
     const raw = await vis.toBuffer();
@@ -128,11 +128,11 @@ export async function generateChart(
       ?? (options as unknown as { jpg?: JpegOptions }).jpg
       ?? {};
     const jpegOpts = normalizeJpegOptions(jpegUserOpts);
-    console.log(`🔧 JPEG defaults in use -> initial=${JPEG_DEFAULTS.initialQuality}, min=${JPEG_DEFAULTS.minQuality}, step=${JPEG_DEFAULTS.step}, maxBytes=${JPEG_DEFAULTS.maxBytes}`);
+    console.error(`🔧 JPEG defaults in use -> initial=${JPEG_DEFAULTS.initialQuality}, min=${JPEG_DEFAULTS.minQuality}, step=${JPEG_DEFAULTS.step}, maxBytes=${JPEG_DEFAULTS.maxBytes}`);
     const { output, quality, size } = await autoCompressToJpeg(raw, jpegOpts);
     const base64 = output.toString("base64");
     const duration = Date.now() - startTime;
-    console.log(`✅ Chart generated (JPEG) in ${duration}ms: quality=${quality}, size=${size} bytes`);
+    console.error(`✅ Chart generated (JPEG) in ${duration}ms: quality=${quality}, size=${size} bytes`);
 
     return {
       isError: false,
@@ -182,19 +182,19 @@ export async function generateChartForHttp(
       ...restOptions,
     };
 
-    console.log(`🎨 Starting chart generation (base64 mode): type=${type}`);
+    console.error(`🎨 Starting chart generation (base64 mode): type=${type}`);
     // Render the chart using GPT-Vis SSR
     const vis = await render(renderOptions);
-    console.log("✅ Successfully rendered chart with GPT-Vis SSR");
+    console.error("✅ Successfully rendered chart with GPT-Vis SSR");
     // Render to buffer (likely PNG), then convert to JPEG and auto-compress to <= maxBytes
     const raw = await vis.toBuffer();
     const jpegUserOpts = (options as unknown as { jpeg?: JpegOptions; jpg?: JpegOptions }).jpeg
       ?? (options as unknown as { jpg?: JpegOptions }).jpg
       ?? {};
     const jpegOpts = normalizeJpegOptions(jpegUserOpts);
-    console.log(`🔧 JPEG defaults in use -> initial=${JPEG_DEFAULTS.initialQuality}, min=${JPEG_DEFAULTS.minQuality}, step=${JPEG_DEFAULTS.step}, maxBytes=${JPEG_DEFAULTS.maxBytes}`);
+    console.error(`🔧 JPEG defaults in use -> initial=${JPEG_DEFAULTS.initialQuality}, min=${JPEG_DEFAULTS.minQuality}, step=${JPEG_DEFAULTS.step}, maxBytes=${JPEG_DEFAULTS.maxBytes}`);
     const { output, quality, size } = await autoCompressToJpeg(raw, jpegOpts);
-    console.log(`🗜️ JPEG compression result: quality=${quality}, size=${size} bytes (limit=${jpegOpts.maxBytes})`);
+    console.error(`🗜️ JPEG compression result: quality=${quality}, size=${size} bytes (limit=${jpegOpts.maxBytes})`);
     const base64 = output.toString("base64");
 
     return {
@@ -216,7 +216,7 @@ export async function generateChartForHttp(
 /**
  * Compose MCP tools from the upstream chart server
  */
-console.log("🔧 Composing MCP tools from upstream chart server...");
+console.error("🔧 Composing MCP tools from upstream chart server...");
 const { tools, cleanupClients } = await composeMcpDepTools({
   mcpServers: {
     "mcp-server-chart": {
@@ -226,14 +226,14 @@ const { tools, cleanupClients } = await composeMcpDepTools({
   },
 });
 export { cleanupClients };
-console.log(
+console.error(
   `📊 Discovered ${Object.keys(tools).length} tools from upstream server`,
 );
 
 /**
  * Create the MCP server instance
  */
-console.log("🏗️  Creating MCP server instance...");
+console.error("🏗️  Creating MCP server instance...");
 export const server = new ComposableMCPServer(
   {
     name: "gpt-vis-mcp",
@@ -241,7 +241,7 @@ export const server = new ComposableMCPServer(
   },
   { capabilities: { tools: {} } },
 );
-console.log("✅ MCP server instance created successfully");
+console.error("✅ MCP server instance created successfully");
 
 /**
  * Register a tool with custom chart generation executor
@@ -251,23 +251,23 @@ const registerToolWithLocalExecutor = (tool: MCPTool): void => {
 
   // Check if this chart type is supported
   if (CHART_TYPE_UNSUPPORTED.includes(name)) {
-    console.log(`⚠️  Skipping unsupported chart type: ${name}`);
+    console.error(`⚠️  Skipping unsupported chart type: ${name}`);
     return;
   }
 
-  console.log(`🔧 Registering tool: ${name}`);
+  console.error(`🔧 Registering tool: ${name}`);
 
   server.tool(
     name,
     description,
     jsonSchema(inputSchema),
     async (context: unknown): Promise<ChartResult> => {
-      console.log(`🚀 Executing tool: ${name}`);
+      console.error(`🚀 Executing tool: ${name}`);
 
       try {
         // Extract data from context
         const { data } = context as { data: Record<string, unknown> };
-        console.log(
+        console.error(
           `📝 Processing data for ${name}:`,
           Object.keys(data).length,
           "fields",
@@ -311,18 +311,18 @@ const supportedTools = (Object.values(tools) as MCPTool[]).filter(
   (tool: MCPTool) => !CHART_TYPE_UNSUPPORTED.includes(tool.name),
 );
 
-console.log(
+console.error(
   `📦 Registering ${supportedTools.length} supported tools out of ${
     Object.keys(tools).length
   } total tools`,
 );
-console.log(
+console.error(
   `🚫 Skipping ${CHART_TYPE_UNSUPPORTED.length} unsupported tools:`,
   CHART_TYPE_UNSUPPORTED.join(", "),
 );
 
 supportedTools.forEach(registerToolWithLocalExecutor);
 
-console.log("🎉 GPT-Vis MCP Server initialization completed successfully!");
-console.log(`🔧 Total registered tools: ${supportedTools.length}`);
-console.log("🟢 Server is ready to handle chart generation requests");
+console.error("🎉 GPT-Vis MCP Server initialization completed successfully!");
+console.error(`🔧 Total registered tools: ${supportedTools.length}`);
+console.error("🟢 Server is ready to handle chart generation requests");

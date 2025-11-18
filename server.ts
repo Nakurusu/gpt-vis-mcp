@@ -23,7 +23,7 @@ const args = parseArgs(Deno.args, {
 });
 
 if (args.help) {
-  console.log(`
+  console.error(`
 GPT-Vis MCP Server
 
 Usage: server.ts [options]
@@ -69,7 +69,7 @@ if (isNaN(port) || port < 1 || port > 65535) {
   Deno.exit(1);
 }
 
-console.log(`🚀 Starting ${transport} server on ${host}:${port}...`);
+console.error(`🚀 Starting ${transport} server on ${host}:${port}...`);
 
 if (transport === "stdio") {
   await startStdio();
